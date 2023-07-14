@@ -97,8 +97,7 @@ public: OrderModify(OrderId orderId, Side side, Price price, Quantity quantity)
   Side GetSide() const { return side_; }
   Quantity GetQuantity() const { return quantity_; }
 
-  OrderPointer ToOrderPointer(OrderType type ) const 
-  {
+  OrderPointer ToOrderPointer(OrderType type ) const {
     return std::make_shared<Order>(type, GetOrderId(), GetSide(), GetPrice(), GetQuantity());
   }
 
@@ -137,6 +136,7 @@ private:
     OrderPointer order_{ nullptr };
     OrderPointers::iterator location_;
   };
+  // OrderPointers are all orders with the same price
   std::map<Price, OrderPointers, std::greater<Price> > bids_;
   std::map<Price, OrderPointers, std::less<Price> > asks_;
   std::unordered_map<OrderId, OrderEntry> orders_;
@@ -149,8 +149,8 @@ private:
       const auto& [bestAsk, _] = *asks_.begin();
       return price >= bestAsk;
     }
-    else{
-      if(bids_.empty())
+    else {
+      if (bids_.empty())
         return false;
       
       const auto& [bestBid, _] = *bids_.begin();
@@ -158,19 +158,19 @@ private:
     }
   }
   
-  Trades MatchOrders(){
+  Trades MatchOrders() {
     Trades trades;
     trades.reserve(orders_.size());
 
     while (true) {
-      if(bids_.empty() || asks_.empty()) {
+      if (bids_.empty() || asks_.empty()) {
         break;
       }
 
       auto& [bidPrice, samePriceBids] = *bids_.begin();
       auto& [askPrice, samePriceAsks] = *asks_.begin();
 
-
+  
       while (samePriceBids.size() && samePriceAsks.size()) {
         auto& bid = samePriceBids.front();
         auto& ask = samePriceAsks.front();
@@ -184,12 +184,10 @@ private:
           samePriceBids.pop_front();
           orders_.erase(bid->GetOrderId());
         }
-
         if (ask->isFilled()) {
           samePriceAsks.pop_front();
           orders_.erase(ask->GetOrderId());
         }
-
         if (samePriceBids.empty()) {
           bids_.erase(bidPrice);
         }
@@ -197,12 +195,87 @@ private:
           asks_.erase(askPrice);
         }
         trades.push_back(
-          Trade({bid->GetOrderId(), bidPrice, quantity}, {ask->GetOrderId(), askPrice, quantity}));
+          Trade({bid->GetOrderId(), bidPrice, quantity}, 
+          {ask->GetOrderId(), askPrice, quantity})
+        );
       }
+      
+      if (!bids_.empty()) {
+        auto& [_, bids] = *bids_.begin();
+        auto& order = bids.front();
+        if (order->GetOrderType() == OrderType::FillAndKill) {
+          CancelOrder(order->GetOrderId());
+        }
+      }
+
+      if (!asks_.empty()) {
+        auto& [_, asks] = *asks_.begin();
+        auto& order = asks.front();
+        if (order->GetOrderType() == OrderType::FillAndKill) {
+          CancelOrder(order->GetOrderId());
+        }
+      }
+      return trades;
     }
   }
 
 public:
+    Trades AddOrder(OrderPointer order) {
+      if (orders_.count(order->GetOrderId())) return {};
+
+      if (order->GetOrderType() == OrderType::FillAndKill &&
+        !CanMatch(order->GetSide(), order->GetPrice())) return {};
+      
+      OrderPointers::iterator iterator;
+
+      if (order->GetSide() == Side::Buy) {
+        auto& orders = bids_[order->GetPrice()];
+        orders.push_back(order);
+        iterator = std::next(orders.begin(), orders.size() - 1);
+      }
+      else {
+        auto& orders = asks_[order->GetPrice()];
+        orders.push_back(order);
+        iterator = std::next(orders.begin(), orders.size() - 1);
+      }
+
+      orders_.insert({order->GetOrderId(), OrderEntry{order, iterator}});
+      return MatchOrders();
+    }
+
+    void CancelOrder(OrderId orderId) {
+
+      if (!orders_.count(orderId)) return;
+
+      const auto& [order, orderIterator] = orders_.at(orderId);
+      orders_.erase(orderId);
+
+      auto price = order->GetPrice();
+      if (order->GetSide() == Side::Sell) {
+        auto& orders = asks_.at(price);
+        orders.erase(orderIterator);
+        if (orders.empty()) {
+          asks_.erase(price);
+        }
+      }
+      else {
+        auto& orders = bids_.at(price);
+        orders.erase(orderIterator);
+        if (orders.empty()) {
+          bids_.erase(price);
+        }
+      }
+    }
+
+    Trades MatchOrder(OrderModify order) {
+      if (!orders_.count(order.GetOrderId())) return {};
+
+      auto& [existingOrder, _] = orders_.at(order.GetOrderId());
+      CancelOrder(order.GetOrderId());
+      return AddOrder(order.ToOrderPointer(existingOrder->GetOrderType()));
+    }
+
+    
 
 };
 
