@@ -35,3 +35,4 @@
 INSTALL.md
 .vscode
 .vs
+*.py
